@@ -52,3 +52,7 @@ Username: johnny
 Passowrd: walker
 
 You can also check/cheat by looking at schema.sql.
+
+The DB is called data.db and will be dropped next to app.py. You can remove this file, but you'll need to restart the DB with "flask initdb".
+
+Go to http://localhost:8888/
