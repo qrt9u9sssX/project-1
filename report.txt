@@ -1,0 +1,126 @@
+REPORT.
+
+* A1-Injection
+Issue: SQL injection in the log-in form
+Steps to reproduce:
+1. Open the index page at "/"
+2. If no username is known, use the following line as the username to log-in as the first user in the users table:
+
+owned" or "a"="a";--
+
+3. Write anything as the password
+4. Submit the form
+5. You are now logged-in as johnny
+Remediation:
+Never concatenate user-supplied strings to SQL statements (as done in line 102). Always use the DB engine's functions to parameterize queries (similar to prepared statements). This can be seen in the rest of the functions interacting with the DB (lines 68, 130, and 169).
+
+* A2-Broken authentication and session management
+Issue: The authentication is based on the contents of the user's cookie, which allows session fixation is a correct username is supplied
+Steps to reproduce:
+1. Open the index page at "/"
+2. Set a cookie with the following contents:
+
+username=johnny
+
+Where "johnny" is a real user. You can do this in your browser's console with the following line:
+
+document.cookie="username=johnny"
+
+3. Visit any of the protected pages such as /profile, /browse, and /create to impersonate johnny.
+Remediation:
+Never handle authentication/authorization with cookies exclusively nor use predictable values. Sessions must be used once the user has logged-in successfully. Cookies will only hold information that makes reference to said session, such as session IDs. The actual session in the server holds the kind of authentication/authorization the user has (which was computed right after querying the DB for this information). In this case, the login function (near line 111) must create a session and return a cookie with its ID, while the login_required function will check if the session is valid given the provided ID in the cookie.
+
+* A3-Cross-Site Scripting (XSS) in the post's caption
+Issue: An attacker can execute arbitrary JavaScript in the /browse page after creating a malicious post.
+Steps to reproduce:
+1. Log in
+2. Go to the post-creation page at /create
+3. Attach any image
+4. As the caption, input something like:
+
+hello<script>alert('xss')</script>
+
+5. Submit the post
+6. You'll see a JavaScript alert with our 'xss' message when browsing the posts (/browse).
+Remediation:
+Never echo user-supplied data to an HTML page without filtering or sanitization. If no escaping methods are available (e.g templating frameworks such as jinja for python), make sure to sanitize user-supplied data before inserting into the DB. A way to sanitize inputs to avoid XSS is by stripping out '<' and '>' characters. However, this approach is not the solution for all cases, since XSS depends on the context too (e.g JavaScript can also be triggered without these characters, by using onload="alert('xss') or other such HTML attributes).
+
+
+* A6-Sensitive data exposure, plain-text passwords in DB 
+Issue: The passwords in the DB are stored in plain-text and can be retrieved by abusing an SQL injection vulnerability in the login form.
+Steps to reproduce:
+1. Open the index page at "/"
+2. If no username is known, use the following line as the username to log-in as the first user in the users table:
+
+owned" or "a"="a";--
+
+3. Write anything as the password
+4. Submit the form
+5. You are now logged-in as johnny
+6. Logout and go back to the login page at "/"
+7. Using johnny as the test username whose password we are retrieving, let's use the "like" SQL directive to guess the password. Enter the following as the username:
+
+johnny" and password like "w%";--
+
+This will make the final query look like:
+
+select * from users where username="johnny" and password like "w%"
+
+If we can log-in, then we know the first letter of johnny's password is "w". We can guess the second letter by entering this into the username field in the login form:
+
+johnny" and password like "wa%";--
+
+If a guess is incorrect, the log-in will fail.
+Remediation: At the very least, passwords should be hashed before storing them into the DB (for example, with SHA-256). So if johnny's password is "walker", we would store "d8b01b2435a39d18015cabdf20afba9ca275412f2eb117f80fb7989c4101c029" in the DB. When logging in, line 102 would use the SHA-256 hash of the given password to make the DB look-up. 
+
+* A7-Missing function level access control, posts can still be created after reaching the daily quota (3).
+Steps to reproduce:
+1. Login and create 3 posts to reach the daily quota
+2. Go to the post-creation page at /create and you'll see the post-submission form is gone
+3. Create a local HTML document with the following:
+
+<form method="post" action="http://localhost:8888/create" enctype="multipart/form-data">
+ <input type="file" name="image"/><br>
+ <textarea type="text" name="caption"></textarea><br>
+ <input type="submit"/>
+</form>
+
+Where http://localhost:8888/ is where this app is listening to.
+
+4. Open that HTML file in the browser you used to login in step 1
+5. Fill out the form and click submit
+6. Go back to the /browse page and you'll see your new post
+Remediation: Always do server-side validations first, and then front-end validations. The validations done between lines 129-139 should also be done after line 154, when creating posts.
+
+* A8-Cross-Site-Request-Forgery (CSRF) in the post-creation form
+Steps to reproduce:
+1. Login
+2. Create a local HTML document with the following:
+<script>
+function submitRequest() {
+  var xhr = new XMLHttpRequest();
+  xhr.open("POST", "http://localhost:8888/create", true);
+  xhr.setRequestHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+  xhr.setRequestHeader("Content-Type", "multipart/form-data; boundary=---------------------------256672629917035");
+  xhr.withCredentials = "true";
+  var body = "-----------------------------256672629917035\r\n" +
+    "Content-Disposition: form-data; name=\"caption\"\r\n" +
+    "\r\n" +
+    "\r\n" +
+    "HELLOWORLD\r\n" +
+    "-----------------------------256672629917035\r\n" +
+    "Content-Disposition: form-data; name=\"image\"; filename=\"image.jpg\"\r\n" +
+    "Content-Type: text/plain\r\n" +
+    "\r\n" +
+    "something representing an image\r\n" +
+    "-----------------------------256672629917035--\r\n";
+  var aBody = new Uint8Array(body.length);
+  for (var i = 0; i < aBody.length; i++)
+    aBody[i] = body.charCodeAt(i);
+  xhr.send(new Blob([aBody]));
+}
+submitRequest();
+</script>
+3. Open the HTML document created in step 2 in the same bowser used to login to the app
+4. Browse the posts in /browse, you'll see a new post created on your behalf with "HELLOWORLD" as the caption.
+Remediation: Use anti-CSRF tokens in every form. Usually web frameworks include this protection mechanism automatically (e.g like Django), but in cases where the framework doesn't, an entry-level CSRF token factory can be created. For example, the form in line 140 would have a hidden text field named "csrftoken" which will have a random string. That same string is added to a list/dictionary inside the user's session (server-side). Whenever a form is submitted, the server would verify that the "csrftoken" provided is inside the user's session.
